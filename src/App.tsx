@@ -49,12 +49,65 @@ function safeReturnTo(raw: string | null) {
   }
 }
 
+function stripLogoutParam(urlStr: string) {
+  try {
+    const u = new URL(urlStr);
+    u.searchParams.delete("logout");
+    return u.toString();
+  } catch {
+    return urlStr;
+  }
+}
+
+// Se vier returnTo dentro do returnTo (seu caso), pega o mais interno
+function normalizeReturnTo(rawReturnTo: string | null) {
+  const first = safeReturnTo(rawReturnTo);
+
+  try {
+    const u = new URL(first);
+    const nested = u.searchParams.get("returnTo");
+    if (!nested) return first;
+
+    let decoded = nested;
+    try {
+      decoded = decodeURIComponent(nested);
+    } catch {
+      // ignore
+    }
+    return safeReturnTo(decoded);
+  } catch {
+    return first;
+  }
+}
+
 function isSamePage(urlStr: string) {
   try {
     const u = new URL(urlStr);
     return u.origin === window.location.origin && u.pathname === window.location.pathname;
   } catch {
     return false;
+  }
+}
+
+function truthyParam(v: string | null) {
+  const x = (v ?? "").toLowerCase();
+  return x === "1" || x === "true" || x === "yes";
+}
+
+function clearSupabaseStorageKeys() {
+  try {
+    for (const k of Object.keys(localStorage)) {
+      if (k.startsWith("sb-")) localStorage.removeItem(k);
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    for (const k of Object.keys(sessionStorage)) {
+      if (k.startsWith("sb-")) sessionStorage.removeItem(k);
+    }
+  } catch {
+    // ignore
   }
 }
 
@@ -68,16 +121,31 @@ export default function App() {
   const [formData, setFormData] = useState({ email: "", password: "" });
 
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
+  const rawReturnTo = useMemo(() => params.get("returnTo"), [params]);
 
-  // ✅ Agora logout funciona por query (?logout=1) — não depende de rota /logout
+  const returnTo = useMemo(() => normalizeReturnTo(rawReturnTo), [rawReturnTo]);
+
   const isLogout = useMemo(() => {
-    const q = params.get("logout");
-    return q === "1" || q === "true";
-  }, [params]);
+    // 1) logout direto por query
+    if (truthyParam(params.get("logout"))) return true;
 
-  const returnTo = useMemo(() => {
-    return safeReturnTo(params.get("returnTo"));
-  }, [params]);
+    // 2) caso ainda exista /logout (se o SPA route funcionar)
+    if (window.location.pathname === "/logout") return true;
+
+    // 3) logout “escondido” dentro do returnTo (seu caso)
+    try {
+      const u = new URL(safeReturnTo(rawReturnTo));
+      if (truthyParam(u.searchParams.get("logout"))) return true;
+    } catch {
+      // ignore
+    }
+
+    // 4) fallback bruto (se vier encoded)
+    const raw = rawReturnTo ?? "";
+    if (raw.includes("logout%3D1") || raw.includes("logout=1")) return true;
+
+    return false;
+  }, [params, rawReturnTo]);
 
   const redirectToAppWithSession = (session: any) => {
     if (!session) return;
@@ -85,7 +153,7 @@ export default function App() {
 
     const base = stripHash(stripTokenHash(returnTo));
 
-    // trava anti-loop
+    // trava anti-loop: se o returnTo for a própria página do auth
     if (isSamePage(base)) {
       setBooting(false);
       return;
@@ -102,27 +170,29 @@ export default function App() {
   };
 
   /** =========================
-   * LOGOUT (por query ?logout=1)
+   * LOGOUT (à prova de returnTo aninhado)
    * ========================= */
   useEffect(() => {
     if (!isLogout) return;
 
     (async () => {
       setRedirecting(true);
+
       try {
         await supabase.auth.signOut({ scope: "global" as any });
       } catch {
         await supabase.auth.signOut();
       }
 
-      // volta “limpo” (sem hash e sem logout=1)
-      const clean = stripHash(stripTokenHash(returnTo));
+      clearSupabaseStorageKeys();
+
+      const clean = stripHash(stripTokenHash(stripLogoutParam(returnTo)));
       window.location.replace(clean);
     })();
   }, [isLogout, returnTo]);
 
   /** =========================
-   * Boot: checa sessão antes de renderizar login (tira o pisca)
+   * Boot: checa sessão antes de renderizar login (tira pisca)
    * ========================= */
   useEffect(() => {
     if (isLogout) return;
@@ -160,7 +230,8 @@ export default function App() {
   /** =========================
    * OAuth
    * ========================= */
-  const loginOAuth = async (provider: "google" | "facebook" | "apple") => {
+  const loginOAuth = async (provider: "google" | "facebook" | "apple") => Fletcher
+    {
     setIsLoading(true);
     setErrorMsg(null);
 
@@ -203,9 +274,6 @@ export default function App() {
     }
   };
 
-  /** =========================
-   * Loading (boot/redirect/logout)
-   * ========================= */
   if (redirecting || booting) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
@@ -214,9 +282,6 @@ export default function App() {
     );
   }
 
-  /** =========================
-   * LOGIN
-   * ========================= */
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary/10 via-background to-accent/10 p-4">
       <div className="w-full max-w-md">
@@ -299,26 +364,12 @@ export default function App() {
 
             <div className="grid grid-cols-3 gap-3">
               <Button type="button" variant="outline" disabled={isLoading} onClick={() => loginOAuth("google")}>
-                <svg className="w-4 h-4" viewBox="0 0 24 24">
-                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4" />
-                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0  -5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853" />
-                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05" />
-                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335" />
-                </svg>
                 Google
               </Button>
-
               <Button type="button" variant="outline" disabled={isLoading} onClick={() => loginOAuth("facebook")}>
-                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="#1877F2">
-                  <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
-                </svg>
                 Facebook
               </Button>
-
               <Button type="button" variant="outline" disabled={isLoading} onClick={() => loginOAuth("apple")}>
-                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.48-3.24 0-1.44.62-2.2.44-3.06-.4C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z" />
-                </svg>
                 Apple
               </Button>
             </div>
@@ -337,9 +388,7 @@ export default function App() {
           </CardContent>
         </Card>
 
-        <p className="text-center text-xs text-muted-foreground mt-6">
-          © 2024 OdontoFlow. Todos os direitos reservados.
-        </p>
+        <p className="text-center text-xs text-muted-foreground mt-6">© 2024 OdontoFlow. Todos os direitos reservados.</p>
       </div>
     </div>
   );
