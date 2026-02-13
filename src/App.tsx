@@ -49,10 +49,20 @@ function safeReturnTo(raw: string | null) {
   }
 }
 
+function isSamePage(urlStr: string) {
+  try {
+    const u = new URL(urlStr);
+    return u.origin === window.location.origin && u.pathname === window.location.pathname;
+  } catch {
+    return false;
+  }
+}
+
 export default function App() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [redirecting, setRedirecting] = useState(false);
+  const [booting, setBooting] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({ email: "", password: "" });
@@ -65,8 +75,16 @@ export default function App() {
 
   const redirectToAppWithSession = (session: any) => {
     if (!session) return;
+    if (redirecting) return;
 
     const base = stripHash(stripTokenHash(returnTo));
+
+    // trava anti-loop: se returnTo for a própria página do auth, não fica dando replace infinito
+    if (isSamePage(base)) {
+      setBooting(false);
+      return;
+    }
+
     const hash =
       `#access_token=${encodeURIComponent(session.access_token)}` +
       `&refresh_token=${encodeURIComponent(session.refresh_token ?? "")}` +
@@ -95,21 +113,34 @@ export default function App() {
   }, [isLogout, returnTo]);
 
   /** =========================
-   * Se já está logado, volta
+   * Boot: checa sessão antes de renderizar login (tira o "pisca")
    * ========================= */
   useEffect(() => {
     if (isLogout) return;
 
     let mounted = true;
+    setBooting(true);
 
     (async () => {
       const { data } = await supabase.auth.getSession();
       if (!mounted) return;
-      if (data.session) redirectToAppWithSession(data.session);
+
+      if (data.session) {
+        redirectToAppWithSession(data.session);
+        return;
+      }
+
+      setBooting(false);
     })();
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session) redirectToAppWithSession(session);
+    const { data: sub } = supabase.auth.onAuthStateChange((event: any, session) => {
+      if (session) {
+        redirectToAppWithSession(session);
+        return;
+      }
+
+      // garante que no carregamento inicial (sem sessão) a tela apareça sem piscar
+      if (event === "INITIAL_SESSION") setBooting(false);
     });
 
     return () => {
@@ -163,22 +194,13 @@ export default function App() {
       setErrorMsg(error.message === "Invalid login credentials" ? "Email ou senha incorretos" : error.message);
       return;
     }
-
     // sessão vai cair no onAuthStateChange e redirecionar
   };
 
   /** =========================
-   * Telas simples de redirecionamento
+   * Telas de loading (boot/redirect)
    * ========================= */
-  if (redirecting && isLogout) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <Loader2 className="h-6 w-6 animate-spin" />
-      </div>
-    );
-  }
-
-  if (redirecting) {
+  if (redirecting || booting) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <Loader2 className="h-6 w-6 animate-spin" />
@@ -187,12 +209,11 @@ export default function App() {
   }
 
   /** =========================
-   * LOGIN — layout “igualzinho”
+   * LOGIN
    * ========================= */
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary/10 via-background to-accent/10 p-4">
       <div className="w-full max-w-md">
-        {/* Logo */}
         <div className="text-center mb-8">
           <img src={logoLight} alt="OdontoFlow Lab System" className="h-14 mx-auto mb-4" />
           <p className="text-muted-foreground">Gestão de Próteses Odontológicas</p>
@@ -310,9 +331,7 @@ export default function App() {
           </CardContent>
         </Card>
 
-        <p className="text-center text-xs text-muted-foreground mt-6">
-          © 2024 OdontoFlow. Todos os direitos reservados.
-        </p>
+        <p className="text-center text-xs text-muted-foreground mt-6">© 2024 OdontoFlow. Todos os direitos reservados.</p>
       </div>
     </div>
   );
