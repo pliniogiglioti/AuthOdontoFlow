@@ -230,24 +230,23 @@ export default function App() {
   /** =========================
    * OAuth
    * ========================= */
-  const loginOAuth = async (provider: "google" | "facebook" | "apple") => Fletcher
-    {
-    setIsLoading(true);
-    setErrorMsg(null);
+    const loginOAuth = async (provider: "google" | "facebook" | "apple") => {
+      setIsLoading(true);
+      setErrorMsg(null);
 
-    const cleanReturnTo = stripTokenHash(returnTo);
-    const redirectBack = `${window.location.origin}/?returnTo=${encodeURIComponent(cleanReturnTo)}`;
+      const cleanReturnTo = stripTokenHash(returnTo);
+      const redirectBack = `${window.location.origin}/?returnTo=${encodeURIComponent(cleanReturnTo)}`;
 
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider,
-      options: { redirectTo: redirectBack },
-    });
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: { redirectTo: redirectBack },
+      });
 
-    if (error) {
-      setErrorMsg(error.message);
-      setIsLoading(false);
-    }
-  };
+      if (error) {
+        setErrorMsg(error.message);
+        setIsLoading(false);
+      }
+    };
 
   /** =========================
    * Email + senha
