@@ -1,8 +1,25 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "./supabaseClient";
 
+function stripTokenHash(urlStr: string) {
+  try {
+    const u = new URL(urlStr);
+
+    // Se vier hash com tokens, remove (evita loop/duplicação)
+    const h = (u.hash || "").toLowerCase();
+    if (h.includes("access_token=") || h.includes("refresh_token=") || h.includes("token_type=")) {
+      u.hash = "";
+    }
+
+    return u.toString();
+  } catch {
+    return urlStr;
+  }
+}
+
 function safeReturnTo(raw: string | null) {
   const fallback = "https://lab.flowodonto.com.br/";
+
   if (!raw) return fallback;
 
   try {
@@ -10,26 +27,52 @@ function safeReturnTo(raw: string | null) {
     const host = url.hostname.toLowerCase();
 
     // só permite redirecionar para seus domínios
-    const allowed =
-      host === "flowodonto.com.br" ||
-      host.endsWith(".flowodonto.com.br");
+    const allowed = host === "flowodonto.com.br" || host.endsWith(".flowodonto.com.br");
+    if (!allowed) return fallback;
 
-    return allowed ? url.toString() : fallback;
+    // remove qualquer hash com token (se alguém passar sem querer)
+    return stripTokenHash(url.toString());
   } catch {
     return fallback;
+  }
+}
+
+function stripHash(urlStr: string) {
+  try {
+    const u = new URL(urlStr);
+    u.hash = "";
+    return u.toString();
+  } catch {
+    return urlStr;
   }
 }
 
 export default function App() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [redirecting, setRedirecting] = useState(false);
 
   const returnTo = useMemo(() => {
     const params = new URLSearchParams(window.location.search);
     return safeReturnTo(params.get("returnTo"));
   }, []);
 
-  // Se já tiver sessão no auth, redireciona já logando o app destino via hash
+  const redirectToAppWithSession = (session: any) => {
+    if (!session) return;
+
+    // IMPORTANT: garante que NÃO vamos anexar hash em cima de hash
+    const base = stripHash(stripTokenHash(returnTo));
+
+    const hash =
+      `#access_token=${encodeURIComponent(session.access_token)}` +
+      `&refresh_token=${encodeURIComponent(session.refresh_token ?? "")}` +
+      `&token_type=bearer` +
+      `&expires_in=${encodeURIComponent(String(session.expires_in ?? 3600))}`;
+
+    setRedirecting(true);
+    window.location.replace(base + hash);
+  };
+
   useEffect(() => {
     let mounted = true;
 
@@ -38,41 +81,30 @@ export default function App() {
       if (!mounted) return;
 
       if (data.session) {
-        const s = data.session;
-        const hash =
-          `#access_token=${encodeURIComponent(s.access_token)}` +
-          `&refresh_token=${encodeURIComponent(s.refresh_token ?? "")}` +
-          `&token_type=bearer` +
-          `&expires_in=${encodeURIComponent(String(s.expires_in ?? 3600))}`;
-
-        window.location.replace(returnTo + hash);
+        redirectToAppWithSession(data.session);
       }
     })();
 
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (!session) return;
-
-      const hash =
-        `#access_token=${encodeURIComponent(session.access_token)}` +
-        `&refresh_token=${encodeURIComponent(session.refresh_token ?? "")}` +
-        `&token_type=bearer` +
-        `&expires_in=${encodeURIComponent(String(session.expires_in ?? 3600))}`;
-
-      window.location.replace(returnTo + hash);
+      if (session) {
+        redirectToAppWithSession(session);
+      }
     });
 
     return () => {
       mounted = false;
       sub.subscription.unsubscribe();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [returnTo]);
 
   const loginGoogle = async () => {
     setBusy(true);
     setMsg(null);
 
-    // volta pro próprio auth com o returnTo junto
-    const redirectBack = `${window.location.origin}/?returnTo=${encodeURIComponent(returnTo)}`;
+    // volta pro próprio auth com o returnTo junto (limpo)
+    const cleanReturnTo = stripTokenHash(returnTo);
+    const redirectBack = `${window.location.origin}/?returnTo=${encodeURIComponent(cleanReturnTo)}`;
 
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
@@ -84,6 +116,15 @@ export default function App() {
       setBusy(false);
     }
   };
+
+  if (redirecting) {
+    return (
+      <div style={{ fontFamily: "Arial, sans-serif", padding: 40 }}>
+        <h1>OdontoFlow Auth</h1>
+        <p>Redirecionando...</p>
+      </div>
+    );
+  }
 
   return (
     <div style={{ fontFamily: "Arial, sans-serif", padding: 40 }}>
@@ -106,11 +147,7 @@ export default function App() {
         {busy ? "Abrindo Google..." : "Entrar com Google"}
       </button>
 
-      {msg && (
-        <p style={{ color: "crimson", marginTop: 16 }}>
-          {msg}
-        </p>
-      )}
+      {msg && <p style={{ color: "crimson", marginTop: 16 }}>{msg}</p>}
     </div>
   );
 }
