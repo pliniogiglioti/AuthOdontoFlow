@@ -228,6 +228,22 @@ async function signUpCompat(
   return { error: { message: "Método de cadastro não disponível (supabase auth)" } };
 }
 
+async function resetPasswordForEmailCompat(email: string, redirectTo: string) {
+  if (typeof auth.resetPasswordForEmail === "function") {
+    return await auth.resetPasswordForEmail(email, { redirectTo });
+  }
+  if (typeof auth.api?.resetPasswordForEmail === "function") {
+    return await auth.api.resetPasswordForEmail(email, { redirectTo });
+  }
+  return { error: { message: "Método de recuperação de senha não disponível" } };
+}
+
+async function updateUserCompat(attrs: { password: string }) {
+  if (typeof auth.updateUser === "function") return await auth.updateUser(attrs);
+  if (typeof auth.update === "function") return await auth.update(attrs);
+  return { error: { message: "Método de atualização de senha não disponível" } };
+}
+
 function onAuthStateChangeCompat(cb: (event: string, session: any) => void) {
   if (typeof auth.onAuthStateChange !== "function") return () => {};
   const res = auth.onAuthStateChange((event: any, session: any) => cb(event, session));
@@ -251,6 +267,8 @@ export default function App() {
   const pathname = typeof window !== "undefined" ? window.location.pathname : "/";
   const isCadastroPage = pathname === "/cadastro";
   const isCheckEmailPage = pathname === "/check-email";
+  const isRecuperarSenhaPage = pathname === "/recuperar-senha";
+  const isNovaSenhaPage = pathname === "/nova-senha";
 
   // login
   const [showPassword, setShowPassword] = useState(false);
@@ -270,6 +288,21 @@ export default function App() {
     password: "",
     confirmPassword: "",
   });
+
+  // recuperar senha
+  const [recoveryEmail, setRecoveryEmail] = useState("");
+  const [recoveryLoading, setRecoveryLoading] = useState(false);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
+  const [recoverySent, setRecoverySent] = useState(false);
+
+  // nova senha
+  const [newPassword, setNewPassword] = useState("");
+  const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
+  const [newPasswordLoading, setNewPasswordLoading] = useState(false);
+  const [newPasswordError, setNewPasswordError] = useState<string | null>(null);
+  const [newPasswordDone, setNewPasswordDone] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showNewPasswordConfirm, setShowNewPasswordConfirm] = useState(false);
 
   // IMPORTANTE: não travar tela por boot
   const [redirecting, setRedirecting] = useState(false);
@@ -337,6 +370,11 @@ export default function App() {
         if (!mounted) return;
 
         if (session) {
+          // Na página de nova-senha, não redireciona para o app (usuário veio pelo link do e-mail)
+          if (isNovaSenhaPage) {
+            return;
+          }
+
           const ok = await validateSessionServerCompat();
           if (!mounted) return;
 
@@ -355,7 +393,16 @@ export default function App() {
     })();
 
     const unsub = onAuthStateChangeCompat(async (event, session) => {
+      // Em recovery, não redireciona para o app — deixa o usuário definir nova senha
+      if (event === "PASSWORD_RECOVERY") {
+        if (typeof window !== "undefined" && window.location.pathname !== "/nova-senha") {
+          window.location.replace("/nova-senha");
+        }
+        return;
+      }
       if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") {
+        // Na página de nova-senha, SIGNED_IN é disparado após updateUser — não redireciona automaticamente
+        if (typeof window !== "undefined" && window.location.pathname === "/nova-senha") return;
         const ok = await validateSessionServerCompat();
         if (ok && session) redirectToAppWithSession(session);
         return;
@@ -457,6 +504,56 @@ export default function App() {
     window.location.assign(to);
   };
 
+  /** Recuperar senha – enviar e-mail */
+  const handleSubmitRecovery = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setRecoveryError(null);
+
+    const email = (recoveryEmail || "").trim();
+    if (!email.includes("@")) {
+      setRecoveryError("Digite um e-mail válido");
+      return;
+    }
+
+    setRecoveryLoading(true);
+    const redirectTo = `${window.location.origin}/nova-senha`;
+    const { error } = await resetPasswordForEmailCompat(email, redirectTo);
+    setRecoveryLoading(false);
+
+    if (error) {
+      setRecoveryError(error.message || "Erro ao enviar e-mail de recuperação");
+      return;
+    }
+
+    setRecoverySent(true);
+  };
+
+  /** Nova senha – atualizar senha */
+  const handleSubmitNovaSenha = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setNewPasswordError(null);
+
+    if (newPassword.length < 6) {
+      setNewPasswordError("A senha deve ter no mínimo 6 caracteres");
+      return;
+    }
+    if (newPassword !== newPasswordConfirm) {
+      setNewPasswordError("As senhas não coincidem");
+      return;
+    }
+
+    setNewPasswordLoading(true);
+    const { error } = await updateUserCompat({ password: newPassword });
+    setNewPasswordLoading(false);
+
+    if (error) {
+      setNewPasswordError(error.message || "Erro ao atualizar senha");
+      return;
+    }
+
+    setNewPasswordDone(true);
+  };
+
   // Se estiver redirecionando, aí sim tela de loader
   if (redirecting) {
     return (
@@ -498,6 +595,185 @@ export default function App() {
               <Button className="w-full" variant="outline" onClick={() => (window.location.href = backToLogin)}>
                 Voltar para o login
               </Button>
+            </CardContent>
+          </Card>
+
+          <p className="text-center text-xs text-muted-foreground mt-6">© 2024 OdontoFlow. Todos os direitos reservados.</p>
+        </div>
+      </div>
+    );
+  }
+
+  /** ====== RECUPERAR SENHA PAGE ====== */
+  if (isRecuperarSenhaPage) {
+    const cleanReturnTo = stripTokenHash(returnTo);
+    const backToLogin = `/?returnTo=${encodeURIComponent(cleanReturnTo)}`;
+
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary/10 via-background to-accent/10 p-4">
+        <div className="w-full max-w-md">
+          <div className="text-center mb-8">
+            <img src={logoLight} alt="OdontoFlow Lab System" className="h-14 mx-auto mb-4" />
+          </div>
+
+          <Card className="border-0 shadow-xl">
+            <CardHeader className="space-y-1 pb-4">
+              <CardTitle className="text-2xl text-center">Recuperar senha</CardTitle>
+              <CardDescription className="text-center">
+                {recoverySent
+                  ? "E-mail enviado! Verifique sua caixa de entrada."
+                  : "Digite seu e-mail para receber o link de recuperação"}
+              </CardDescription>
+            </CardHeader>
+
+            <CardContent className="space-y-4">
+              {recoverySent ? (
+                <>
+                  <p className="text-sm text-muted-foreground leading-relaxed">
+                    Enviamos um link para redefinir sua senha. Clique no link dentro do e-mail para criar uma nova senha.
+                  </p>
+                  <Button className="w-full" variant="outline" onClick={() => (window.location.href = backToLogin)}>
+                    Voltar para o login
+                  </Button>
+                </>
+              ) : (
+                <form onSubmit={handleSubmitRecovery} className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="recoveryEmail">E-mail</Label>
+                    <Input
+                      id="recoveryEmail"
+                      type="email"
+                      placeholder="seu@email.com"
+                      value={recoveryEmail}
+                      onChange={(e) => setRecoveryEmail(e.target.value)}
+                      disabled={recoveryLoading}
+                      autoComplete="email"
+                    />
+                  </div>
+
+                  <Button type="submit" className="w-full" size="lg" disabled={recoveryLoading}>
+                    {recoveryLoading ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Enviando...
+                      </>
+                    ) : (
+                      "Enviar link de recuperação"
+                    )}
+                  </Button>
+
+                  {recoveryError && <p className="text-sm text-destructive">{recoveryError}</p>}
+
+                  <div className="text-center text-sm">
+                    <a href={backToLogin} className="text-primary hover:underline">
+                      Voltar para o login
+                    </a>
+                  </div>
+                </form>
+              )}
+            </CardContent>
+          </Card>
+
+          <p className="text-center text-xs text-muted-foreground mt-6">© 2024 OdontoFlow. Todos os direitos reservados.</p>
+        </div>
+      </div>
+    );
+  }
+
+  /** ====== NOVA SENHA PAGE ====== */
+  if (isNovaSenhaPage) {
+    const cleanReturnTo = stripTokenHash(returnTo);
+    const backToLogin = `/?returnTo=${encodeURIComponent(cleanReturnTo)}`;
+
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary/10 via-background to-accent/10 p-4">
+        <div className="w-full max-w-md">
+          <div className="text-center mb-8">
+            <img src={logoLight} alt="OdontoFlow Lab System" className="h-14 mx-auto mb-4" />
+          </div>
+
+          <Card className="border-0 shadow-xl">
+            <CardHeader className="space-y-1 pb-4">
+              <CardTitle className="text-2xl text-center">Nova senha</CardTitle>
+              <CardDescription className="text-center">
+                {newPasswordDone ? "Senha atualizada com sucesso!" : "Digite sua nova senha"}
+              </CardDescription>
+            </CardHeader>
+
+            <CardContent className="space-y-4">
+              {newPasswordDone ? (
+                <>
+                  <p className="text-sm text-muted-foreground leading-relaxed">
+                    Sua senha foi atualizada. Clique abaixo para fazer login com a nova senha.
+                  </p>
+                  <Button className="w-full" onClick={() => (window.location.href = backToLogin)}>
+                    Ir para o login
+                  </Button>
+                </>
+              ) : (
+                <form onSubmit={handleSubmitNovaSenha} className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="newPassword">Nova senha</Label>
+                    <div className="relative">
+                      <Input
+                        id="newPassword"
+                        type={showNewPassword ? "text" : "password"}
+                        placeholder="••••••••"
+                        value={newPassword}
+                        onChange={(e) => setNewPassword(e.target.value)}
+                        disabled={newPasswordLoading}
+                        autoComplete="new-password"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowNewPassword((p) => !p)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                        disabled={newPasswordLoading}
+                        aria-label={showNewPassword ? "Ocultar senha" : "Mostrar senha"}
+                      >
+                        {showNewPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="newPasswordConfirm">Confirmar nova senha</Label>
+                    <div className="relative">
+                      <Input
+                        id="newPasswordConfirm"
+                        type={showNewPasswordConfirm ? "text" : "password"}
+                        placeholder="••••••••"
+                        value={newPasswordConfirm}
+                        onChange={(e) => setNewPasswordConfirm(e.target.value)}
+                        disabled={newPasswordLoading}
+                        autoComplete="new-password"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowNewPasswordConfirm((p) => !p)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                        disabled={newPasswordLoading}
+                        aria-label={showNewPasswordConfirm ? "Ocultar senha" : "Mostrar senha"}
+                      >
+                        {showNewPasswordConfirm ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <Button type="submit" className="w-full" size="lg" disabled={newPasswordLoading}>
+                    {newPasswordLoading ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Salvando...
+                      </>
+                    ) : (
+                      "Salvar nova senha"
+                    )}
+                  </Button>
+
+                  {newPasswordError && <p className="text-sm text-destructive">{newPasswordError}</p>}
+                </form>
+              )}
             </CardContent>
           </Card>
 
@@ -730,7 +1006,7 @@ export default function App() {
               </div>
 
               <div className="flex items-center justify-end">
-                <a href="https://flowodonto.com.br/recuperar-senha" className="text-sm text-primary hover:underline">
+                <a href={`/recuperar-senha?returnTo=${encodeURIComponent(stripTokenHash(returnTo))}`} className="text-sm text-primary hover:underline">
                   Esqueceu a senha?
                 </a>
               </div>
