@@ -455,7 +455,6 @@ export default function App() {
         <div className="w-full max-w-md">
           <div className="text-center mb-8">
             <img src={logoLight} alt="OdontoFlow Lab System" className="h-14 mx-auto mb-4" />
-            <p className="text-muted-foreground">Gestão de Próteses Odontológicas</p>
           </div>
 
           <Card className="border-0 shadow-xl">
